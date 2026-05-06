@@ -1,0 +1,134 @@
+#include <Servo.h>
+
+Servo servoYatay;
+Servo servoDikey;
+
+// LDR pinleri
+const int ldrSol = A0;
+const int ldrSag = A1;
+const int ldrUst = A2;
+const int ldrAlt = A3;
+
+// Servo pinleri
+const int servoYatayPin = 5;
+const int servoDikeyPin = 6;
+
+// Sürekli servo için mikro-saniye değerleri
+// 1500 us genelde durma noktasıdır.
+// Eğer servo dururken hafif dönüyorsa 1490, 1510 gibi değiştir.
+const int DUR = 1500;
+
+// Hız ayarı
+// 1500'e yakın olursa yavaş döner, uzak olursa hızlı döner.
+const int YAVAS_SAG = 1570;
+const int YAVAS_SOL = 1430;
+
+const int YAVAS_YUKARI = 1570;
+const int YAVAS_ASAGI = 1430;
+
+// LDR fark toleransı
+int tolerans = 60;
+
+// Okuma yumuşatma için fonksiyon
+int okuOrtalama(int pin) {
+  long toplam = 0;
+
+  for (int i = 0; i < 10; i++) {
+    toplam += analogRead(pin);
+    delay(2);
+  }
+
+  return toplam / 10;
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  servoYatay.attach(servoYatayPin);
+  servoDikey.attach(servoDikeyPin);
+
+  // Başlangıçta motorlar dursun
+  servoYatay.writeMicroseconds(DUR);
+  servoDikey.writeMicroseconds(DUR);
+
+  delay(1000);
+
+  Serial.println("Master LDR + MG996R surekli servo testi basladi.");
+}
+
+void loop() {
+  int solDeger = okuOrtalama(ldrSol);
+  int sagDeger = okuOrtalama(ldrSag);
+  int ustDeger = okuOrtalama(ldrUst);
+  int altDeger = okuOrtalama(ldrAlt);
+
+  int yatayFark = sagDeger - solDeger;
+  int dikeyFark = ustDeger - altDeger;
+
+  // -------- YATAY KONTROL --------
+  if (abs(yatayFark) <= tolerans) {
+    // Sağ-sol ışık farkı küçükse yatay motor dursun
+    servoYatay.writeMicroseconds(DUR);
+  } 
+  else {
+    if (yatayFark > 0) {
+      // Sağ LDR daha aydınlıksa sağa dön
+      servoYatay.writeMicroseconds(YAVAS_SAG);
+    } 
+    else {
+      // Sol LDR daha aydınlıksa sola dön
+      servoYatay.writeMicroseconds(YAVAS_SOL);
+    }
+  }
+
+  // -------- DİKEY KONTROL --------
+  if (abs(dikeyFark) <= tolerans) {
+    // Üst-alt ışık farkı küçükse dikey motor dursun
+    servoDikey.writeMicroseconds(DUR);
+  } 
+  else {
+    if (dikeyFark > 0) {
+      // Üst LDR daha aydınlıksa yukarı dön
+      servoDikey.writeMicroseconds(YAVAS_YUKARI);
+    } 
+    else {
+      // Alt LDR daha aydınlıksa aşağı dön
+      servoDikey.writeMicroseconds(YAVAS_ASAGI);
+    }
+  }
+
+  // Serial Monitor kontrol çıktısı
+  Serial.print("Sol: ");
+  Serial.print(solDeger);
+  Serial.print(" | Sag: ");
+  Serial.print(sagDeger);
+  Serial.print(" | Ust: ");
+  Serial.print(ustDeger);
+  Serial.print(" | Alt: ");
+  Serial.print(altDeger);
+
+  Serial.print(" || Yatay Fark: ");
+  Serial.print(yatayFark);
+  Serial.print(" | Dikey Fark: ");
+  Serial.print(dikeyFark);
+
+  Serial.print(" || Yatay Motor: ");
+  if (abs(yatayFark) <= tolerans) {
+    Serial.print("DUR");
+  } else if (yatayFark > 0) {
+    Serial.print("SAGA DON");
+  } else {
+    Serial.print("SOLA DON");
+  }
+
+  Serial.print(" | Dikey Motor: ");
+  if (abs(dikeyFark) <= tolerans) {
+    Serial.println("DUR");
+  } else if (dikeyFark > 0) {
+    Serial.println("YUKARI DON");
+  } else {
+    Serial.println("ASAGI DON");
+  }
+
+  delay(100);
+}
