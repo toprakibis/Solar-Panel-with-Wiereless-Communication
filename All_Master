@@ -1,0 +1,350 @@
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_INA219.h>
+
+#include <Servo.h>
+
+// ===================== PIN AYARLARI =====================
+
+// nRF24L01
+#define NRF_CE_PIN   9
+#define NRF_CSN_PIN  10
+
+// Servo pinleri
+#define SERVO_YATAY_PIN 5
+#define SERVO_DIK_PIN   6
+
+// LDR pinleri
+#define LDR_SOL_UST   A0
+#define LDR_SAG_UST   A1
+#define LDR_SOL_ALT   A2
+#define LDR_SAG_ALT   A3
+
+// ===================== NESNELER =====================
+
+RF24 radio(NRF_CE_PIN, NRF_CSN_PIN);
+
+// LCD adresi genelde 0x27 olur.
+// Ekran gelmezse 0x3F dene.
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+Adafruit_INA219 ina219;
+
+Servo servoYatay;
+Servo servoDik;
+
+// ===================== nRF ADRESİ =====================
+
+const byte address[6] = "00001";
+
+// ===================== AYARLAR =====================
+
+// Servo başlangıç açıları
+int yatayAci = 90;
+int dikAci = 90;
+
+// Servo sınırları
+const int SERVO_MIN = 10;
+const int SERVO_MAX = 170;
+
+// LDR fark toleransı
+// Işık farkı bu değerden küçükse servo hareket etmez.
+const int TOLERANS = 60;
+
+// Her düzeltmede kaç derece oynasın?
+const int SERVO_ADIM = 1;
+
+// Yön ters çalışırsa true/false değiştir.
+bool YATAY_TERS = false;
+bool DIK_TERS = false;
+
+// Panel nominal gücü:
+// 6V * 125mA = 0.75W = 750mW
+const float PANEL_NOMINAL_GUC_MW = 750.0;
+
+// Zaman ayarları
+unsigned long sonKontrolZamani = 0;
+unsigned long sonGondermeZamani = 0;
+unsigned long sonLCDZamani = 0;
+
+const unsigned long KONTROL_ARALIGI = 40;
+const unsigned long GONDERME_ARALIGI = 200;
+const unsigned long LCD_ARALIGI = 500;
+
+// Sensör değerleri
+int solUst, sagUst, solAlt, sagAlt;
+
+float panelVoltaj = 0.0;
+float panelAkim_mA = 0.0;
+float panelGuc_mW = 0.0;
+float verimYuzde = 0.0;
+
+bool inaOK = false;
+bool radioOK = false;
+
+unsigned long paketSayaci = 0;
+
+// ===================== GÖNDERİLECEK VERİ =====================
+
+struct MasterData {
+  int yatayAci;
+  int dikAci;
+  float voltaj;
+  float akim_mA;
+  float guc_mW;
+  float verim;
+  unsigned long sayac;
+};
+
+MasterData veri;
+
+// ===================== SETUP =====================
+
+void setup() {
+  Serial.begin(9600);
+  delay(1000);
+
+  Serial.println(F("MASTER basliyor..."));
+
+  // Servo başlat
+  servoYatay.attach(SERVO_YATAY_PIN);
+  servoDik.attach(SERVO_DIK_PIN);
+
+  servoYatay.write(yatayAci);
+  servoDik.write(dikAci);
+
+  // LCD başlat
+  lcd.init();
+  lcd.backlight();
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("MASTER BASLIYOR");
+  lcd.setCursor(0, 1);
+  lcd.print("Sistem kontrol...");
+
+  // INA219 başlat
+  if (ina219.begin()) {
+    inaOK = true;
+    ina219.setCalibration_16V_400mA();
+    Serial.println(F("INA219 bulundu."));
+  } else {
+    inaOK = false;
+    Serial.println(F("INA219 bulunamadi."));
+  }
+
+  // nRF24 başlat
+  if (radio.begin()) {
+    radioOK = true;
+
+    radio.openWritingPipe(address);
+    radio.setPALevel(RF24_PA_LOW);
+    radio.setDataRate(RF24_250KBPS);
+    radio.setChannel(76);
+    radio.stopListening();
+
+    Serial.println(F("nRF24 baslatildi."));
+
+    if (radio.isChipConnected()) {
+      Serial.println(F("nRF24 bagli gorunuyor."));
+    } else {
+      Serial.println(F("nRF24 chip baglantisi sorunlu olabilir."));
+    }
+  } else {
+    radioOK = false;
+    Serial.println(F("nRF24 baslatilamadi."));
+  }
+
+  delay(1000);
+  lcd.clear();
+}
+
+// ===================== LOOP =====================
+
+void loop() {
+  unsigned long simdi = millis();
+
+  if (simdi - sonKontrolZamani >= KONTROL_ARALIGI) {
+    sonKontrolZamani = simdi;
+
+    ldrleriOku();
+    servoKontrol();
+    gucOku();
+  }
+
+  if (simdi - sonGondermeZamani >= GONDERME_ARALIGI) {
+    sonGondermeZamani = simdi;
+
+    slaveVeriGonder();
+  }
+
+  if (simdi - sonLCDZamani >= LCD_ARALIGI) {
+    sonLCDZamani = simdi;
+
+    lcdGuncelle();
+    seriMonitoreYaz();
+  }
+}
+
+// ===================== LDR OKUMA =====================
+
+void ldrleriOku() {
+  solUst = analogRead(LDR_SOL_UST);
+  sagUst = analogRead(LDR_SAG_UST);
+  solAlt = analogRead(LDR_SOL_ALT);
+  sagAlt = analogRead(LDR_SAG_ALT);
+}
+
+// ===================== SERVO KONTROL =====================
+
+void servoKontrol() {
+  int ustOrtalama = (solUst + sagUst) / 2;
+  int altOrtalama = (solAlt + sagAlt) / 2;
+
+  int solOrtalama = (solUst + solAlt) / 2;
+  int sagOrtalama = (sagUst + sagAlt) / 2;
+
+  int dikFark = ustOrtalama - altOrtalama;
+  int yatayFark = solOrtalama - sagOrtalama;
+
+  // Dikey eksen kontrolü
+  if (abs(dikFark) > TOLERANS) {
+    if (dikFark > 0) {
+      if (DIK_TERS == false) dikAci += SERVO_ADIM;
+      else dikAci -= SERVO_ADIM;
+    } else {
+      if (DIK_TERS == false) dikAci -= SERVO_ADIM;
+      else dikAci += SERVO_ADIM;
+    }
+  }
+
+  // Yatay eksen kontrolü
+  if (abs(yatayFark) > TOLERANS) {
+    if (yatayFark > 0) {
+      if (YATAY_TERS == false) yatayAci += SERVO_ADIM;
+      else yatayAci -= SERVO_ADIM;
+    } else {
+      if (YATAY_TERS == false) yatayAci -= SERVO_ADIM;
+      else yatayAci += SERVO_ADIM;
+    }
+  }
+
+  // Açı sınırlandırma
+  yatayAci = constrain(yatayAci, SERVO_MIN, SERVO_MAX);
+  dikAci = constrain(dikAci, SERVO_MIN, SERVO_MAX);
+
+  // Servolara yaz
+  servoYatay.write(yatayAci);
+  servoDik.write(dikAci);
+}
+
+// ===================== INA219 GÜÇ OKUMA =====================
+
+void gucOku() {
+  if (inaOK == false) {
+    panelVoltaj = 0.0;
+    panelAkim_mA = 0.0;
+    panelGuc_mW = 0.0;
+    verimYuzde = 0.0;
+    return;
+  }
+
+  float shuntVoltage_mV = ina219.getShuntVoltage_mV();
+  float busVoltage_V = ina219.getBusVoltage_V();
+
+  panelVoltaj = busVoltage_V + (shuntVoltage_mV / 1000.0);
+  panelAkim_mA = ina219.getCurrent_mA();
+  panelGuc_mW = ina219.getPower_mW();
+
+  if (panelGuc_mW < 0) panelGuc_mW = 0;
+  if (panelAkim_mA < 0) panelAkim_mA = 0;
+
+  verimYuzde = (panelGuc_mW / PANEL_NOMINAL_GUC_MW) * 100.0;
+
+  if (verimYuzde < 0) verimYuzde = 0;
+  if (verimYuzde > 100) verimYuzde = 100;
+}
+
+// ===================== SLAVE'E VERİ GÖNDER =====================
+
+void slaveVeriGonder() {
+  if (radioOK == false) return;
+
+  veri.yatayAci = yatayAci;
+  veri.dikAci = dikAci;
+  veri.voltaj = panelVoltaj;
+  veri.akim_mA = panelAkim_mA;
+  veri.guc_mW = panelGuc_mW;
+  veri.verim = verimYuzde;
+  veri.sayac = paketSayaci++;
+
+  bool durum = radio.write(&veri, sizeof(veri));
+
+  if (durum) {
+    Serial.println(F("Veri gonderildi."));
+  } else {
+    Serial.println(F("Veri gonderilemedi."));
+  }
+}
+
+// ===================== LCD GÜNCELLE =====================
+
+void lcdGuncelle() {
+  lcd.setCursor(0, 0);
+  lcd.print("Dik Aci  : ");
+  lcd.print(dikAci);
+  lcd.print((char)223);
+  lcd.print("     ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Yatay Aci: ");
+  lcd.print(yatayAci);
+  lcd.print((char)223);
+  lcd.print("     ");
+
+  lcd.setCursor(0, 2);
+  lcd.print("Guc      : ");
+  lcd.print(panelGuc_mW / 1000.0, 2);
+  lcd.print(" W   ");
+
+  lcd.setCursor(0, 3);
+  lcd.print("Verim    : ");
+  lcd.print(verimYuzde, 1);
+  lcd.print(" %   ");
+}
+
+// ===================== SERİ MONİTÖR =====================
+
+void seriMonitoreYaz() {
+  Serial.print(F("LDR SU: "));
+  Serial.print(solUst);
+  Serial.print(F(" | SG: "));
+  Serial.print(sagUst);
+  Serial.print(F(" | AU: "));
+  Serial.print(solAlt);
+  Serial.print(F(" | AG: "));
+  Serial.print(sagAlt);
+
+  Serial.print(F(" || Yatay: "));
+  Serial.print(yatayAci);
+
+  Serial.print(F(" | Dik: "));
+  Serial.print(dikAci);
+
+  Serial.print(F(" || V: "));
+  Serial.print(panelVoltaj, 2);
+
+  Serial.print(F(" | mA: "));
+  Serial.print(panelAkim_mA, 1);
+
+  Serial.print(F(" | mW: "));
+  Serial.print(panelGuc_mW, 1);
+
+  Serial.print(F(" | Verim: "));
+  Serial.print(verimYuzde, 1);
+  Serial.println(F(" %"));
+}
