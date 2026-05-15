@@ -2,16 +2,11 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-// ===================== NESNELER =====================
-
 Servo servoYatay;
 Servo servoDik;
 
 // LCD adresi 0x27 veya 0x3F olabilir.
-// Ekran gelmezse 0x27 yerine 0x3F dene.
 LiquidCrystal_I2C lcd(0x27, 20, 4);
-
-// ===================== PINLER =====================
 
 // LDR pinleri
 const int LDR_SOL = A0;
@@ -23,37 +18,31 @@ const int LDR_ALT = A3;
 const int SERVO_YATAY_PIN = 5;
 const int SERVO_DIK_PIN   = 6;
 
-// ===================== AYARLAR =====================
-
 // Başlangıç açıları
 int yatayAci = 90;
 int dikAci   = 90;
 
-// Servo hareket sınırları
+// Servo sınırları
 const int YATAY_MIN = 10;
 const int YATAY_MAX = 170;
 
-const int DIK_MIN = 20;
-const int DIK_MAX = 160;
+const int DIK_MIN = 10;
+const int DIK_MAX = 170;
 
-// LDR farkı toleransı
-// Fark bundan küçükse servo hareket etmez.
-int tolerans = 60;
+// Takip ayarları
+int yatayTolerans = 60;
+int dikTolerans   = 60;
 
-// Her döngüde kaç derece hareket etsin?
-int adim = 1;
-
-// LCD yenileme süresi
-unsigned long oncekiLcdZamani = 0;
-const unsigned long lcdYenilemeSuresi = 500;
-
-// Şimdilik INA219 eklenmediği için geçici değerler
+// Şimdilik INA219 yok
 float guc = 0.00;
 float verim = 0.00;
 
-// ===================== FONKSİYONLAR =====================
+// LCD yenileme
+unsigned long oncekiLcdZamani = 0;
+const unsigned long lcdYenilemeSuresi = 500;
 
-int ldrOrtalamaOku(int pin) {
+// LDR ortalama okuma
+int ortalamaOku(int pin) {
   long toplam = 0;
 
   for (int i = 0; i < 10; i++) {
@@ -64,30 +53,53 @@ int ldrOrtalamaOku(int pin) {
   return toplam / 10;
 }
 
-void lcdGuncelle() {
-  lcd.clear();
+// Farka göre adım hesaplama
+int adimHesapla(int fark, int tolerans) {
+  int mutlakFark = abs(fark);
 
+  if (mutlakFark <= tolerans) {
+    return 0;
+  }
+  else if (mutlakFark > 200) {
+    return 8;
+  }
+  else if (mutlakFark > 150) {
+    return 6;
+  }
+  else if (mutlakFark > 100) {
+    return 4;
+  }
+  else if (mutlakFark > 60) {
+    return 2;
+  }
+  else if (mutlakFark > 40) {
+    return 1;
+  }
+}
+
+void lcdGuncelle() {
   lcd.setCursor(0, 0);
   lcd.print("Dik Aci   : ");
   lcd.print(dikAci);
   lcd.print((char)223);
+  lcd.print("   ");
 
   lcd.setCursor(0, 1);
   lcd.print("Yatay Aci : ");
   lcd.print(yatayAci);
   lcd.print((char)223);
+  lcd.print("   ");
 
   lcd.setCursor(0, 2);
   lcd.print("Guc       : ");
   lcd.print(guc, 2);
-  lcd.print(" W");
+  lcd.print(" W   ");
 
   lcd.setCursor(0, 3);
   lcd.print("Verim     : %");
   lcd.print(verim, 1);
+  lcd.print("   ");
 }
-
-// ===================== SETUP =====================
 
 void setup() {
   Serial.begin(9600);
@@ -104,81 +116,77 @@ void setup() {
   lcd.setCursor(0, 0);
   lcd.print("Master Panel");
   lcd.setCursor(0, 1);
-  lcd.print("180 Servo Modu");
+  lcd.print("Adaptif Takip");
   delay(1500);
   lcd.clear();
 
-  Serial.println("Master 180 derece servo + LCD basladi.");
+  Serial.println("Master + Adaptif Servo Takip basladi.");
 }
 
-// ===================== LOOP =====================
-
 void loop() {
-  int solDeger = ldrOrtalamaOku(LDR_SOL);
-  int sagDeger = ldrOrtalamaOku(LDR_SAG);
-  int ustDeger = ldrOrtalamaOku(LDR_UST);
-  int altDeger = ldrOrtalamaOku(LDR_ALT);
+  int sol = ortalamaOku(LDR_SOL);
+  int sag = ortalamaOku(LDR_SAG);
+  int ust = ortalamaOku(LDR_UST);
+  int alt = ortalamaOku(LDR_ALT);
 
-  int yatayFark = sagDeger - solDeger;
-  int dikFark   = ustDeger - altDeger;
+  int yatayFark = sag - sol;
+  int dikFark   = ust - alt;
 
-  // ===================== YATAY KONTROL =====================
-  if (abs(yatayFark) > tolerans) {
+  int yatayAdim = adimHesapla(yatayFark, yatayTolerans);
+  int dikAdim   = adimHesapla(dikFark, dikTolerans);
+
+  // YATAY KONTROL
+  if (yatayAdim > 0) {
     if (yatayFark > 0) {
-      // Sag taraf daha aydinliksa yatay aciyi artir
-      yatayAci += adim;
-    } 
-    else {
-      // Sol taraf daha aydinliksa yatay aciyi azalt
-      yatayAci -= adim;
+      yatayAci += yatayAdim;
+    } else {
+      yatayAci -= yatayAdim;
     }
   }
 
-  // ===================== DIK KONTROL =====================
-  if (abs(dikFark) > tolerans) {
+  // DIKEY KONTROL
+  if (dikAdim > 0) {
     if (dikFark > 0) {
-      // Ust taraf daha aydinliksa dik aciyi artir
-      dikAci += adim;
-    } 
-    else {
-      // Alt taraf daha aydinliksa dik aciyi azalt
-      dikAci -= adim;
+      dikAci += dikAdim;
+    } else {
+      dikAci -= dikAdim;
     }
   }
 
-  // Servo aci sinirlari
   yatayAci = constrain(yatayAci, YATAY_MIN, YATAY_MAX);
   dikAci   = constrain(dikAci, DIK_MIN, DIK_MAX);
 
-  // Servo konumlarini yaz
   servoYatay.write(yatayAci);
   servoDik.write(dikAci);
 
-  // Serial Monitor kontrol
   Serial.print("Sol: ");
-  Serial.print(solDeger);
+  Serial.print(sol);
   Serial.print(" | Sag: ");
-  Serial.print(sagDeger);
+  Serial.print(sag);
   Serial.print(" | Ust: ");
-  Serial.print(ustDeger);
+  Serial.print(ust);
   Serial.print(" | Alt: ");
-  Serial.print(altDeger);
+  Serial.print(alt);
 
-  Serial.print(" || Yatay Fark: ");
+  Serial.print(" || YatayFark: ");
   Serial.print(yatayFark);
-  Serial.print(" | Dik Fark: ");
+  Serial.print(" | DikFark: ");
   Serial.print(dikFark);
 
-  Serial.print(" || Yatay Aci: ");
+  Serial.print(" || YatayAdim: ");
+  Serial.print(yatayAdim);
+  Serial.print(" | DikAdim: ");
+  Serial.print(dikAdim);
+
+  Serial.print(" || YatayAci: ");
   Serial.print(yatayAci);
-  Serial.print(" | Dik Aci: ");
+  Serial.print(" | DikAci: ");
   Serial.println(dikAci);
 
-  // LCD guncelleme
   if (millis() - oncekiLcdZamani >= lcdYenilemeSuresi) {
     oncekiLcdZamani = millis();
     lcdGuncelle();
   }
 
-  delay(100);
+  delay(150);
 }
