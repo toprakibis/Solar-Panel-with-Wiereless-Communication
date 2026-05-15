@@ -1,36 +1,59 @@
 #include <Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ===================== NESNELER =====================
 
 Servo servoYatay;
-Servo servoDikey;
+Servo servoDik;
+
+// LCD adresi 0x27 veya 0x3F olabilir.
+// Ekran gelmezse 0x27 yerine 0x3F dene.
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+// ===================== PINLER =====================
 
 // LDR pinleri
-const int ldrSol = A0;
-const int ldrSag = A1;
-const int ldrUst = A2;
-const int ldrAlt = A3;
+const int LDR_SOL = A0;
+const int LDR_SAG = A1;
+const int LDR_UST = A2;
+const int LDR_ALT = A3;
 
 // Servo pinleri
-const int servoYatayPin = 5;
-const int servoDikeyPin = 6;
+const int SERVO_YATAY_PIN = 5;
+const int SERVO_DIK_PIN   = 6;
 
-// Sürekli servo için mikro-saniye değerleri
-// 1500 us genelde durma noktasıdır.
-// Eğer servo dururken hafif dönüyorsa 1490, 1510 gibi değiştir.
-const int DUR = 1500;
+// ===================== AYARLAR =====================
 
-// Hız ayarı
-// 1500'e yakın olursa yavaş döner, uzak olursa hızlı döner.
-const int YAVAS_SAG = 1570;
-const int YAVAS_SOL = 1430;
+// Başlangıç açıları
+int yatayAci = 90;
+int dikAci   = 90;
 
-const int YAVAS_YUKARI = 1570;
-const int YAVAS_ASAGI = 1430;
+// Servo hareket sınırları
+const int YATAY_MIN = 10;
+const int YATAY_MAX = 170;
 
-// LDR fark toleransı
+const int DIK_MIN = 20;
+const int DIK_MAX = 160;
+
+// LDR farkı toleransı
+// Fark bundan küçükse servo hareket etmez.
 int tolerans = 60;
 
-// Okuma yumuşatma için fonksiyon
-int okuOrtalama(int pin) {
+// Her döngüde kaç derece hareket etsin?
+int adim = 1;
+
+// LCD yenileme süresi
+unsigned long oncekiLcdZamani = 0;
+const unsigned long lcdYenilemeSuresi = 500;
+
+// Şimdilik INA219 eklenmediği için geçici değerler
+float guc = 0.00;
+float verim = 0.00;
+
+// ===================== FONKSİYONLAR =====================
+
+int ldrOrtalamaOku(int pin) {
   long toplam = 0;
 
   for (int i = 0; i < 10; i++) {
@@ -41,63 +64,97 @@ int okuOrtalama(int pin) {
   return toplam / 10;
 }
 
+void lcdGuncelle() {
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("Dik Aci   : ");
+  lcd.print(dikAci);
+  lcd.print((char)223);
+
+  lcd.setCursor(0, 1);
+  lcd.print("Yatay Aci : ");
+  lcd.print(yatayAci);
+  lcd.print((char)223);
+
+  lcd.setCursor(0, 2);
+  lcd.print("Guc       : ");
+  lcd.print(guc, 2);
+  lcd.print(" W");
+
+  lcd.setCursor(0, 3);
+  lcd.print("Verim     : %");
+  lcd.print(verim, 1);
+}
+
+// ===================== SETUP =====================
+
 void setup() {
   Serial.begin(9600);
 
-  servoYatay.attach(servoYatayPin);
-  servoDikey.attach(servoDikeyPin);
+  servoYatay.attach(SERVO_YATAY_PIN);
+  servoDik.attach(SERVO_DIK_PIN);
 
-  // Başlangıçta motorlar dursun
-  servoYatay.writeMicroseconds(DUR);
-  servoDikey.writeMicroseconds(DUR);
+  servoYatay.write(yatayAci);
+  servoDik.write(dikAci);
 
-  delay(1000);
+  lcd.init();
+  lcd.backlight();
 
-  Serial.println("Master LDR + MG996R surekli servo testi basladi.");
+  lcd.setCursor(0, 0);
+  lcd.print("Master Panel");
+  lcd.setCursor(0, 1);
+  lcd.print("180 Servo Modu");
+  delay(1500);
+  lcd.clear();
+
+  Serial.println("Master 180 derece servo + LCD basladi.");
 }
 
+// ===================== LOOP =====================
+
 void loop() {
-  int solDeger = okuOrtalama(ldrSol);
-  int sagDeger = okuOrtalama(ldrSag);
-  int ustDeger = okuOrtalama(ldrUst);
-  int altDeger = okuOrtalama(ldrAlt);
+  int solDeger = ldrOrtalamaOku(LDR_SOL);
+  int sagDeger = ldrOrtalamaOku(LDR_SAG);
+  int ustDeger = ldrOrtalamaOku(LDR_UST);
+  int altDeger = ldrOrtalamaOku(LDR_ALT);
 
   int yatayFark = sagDeger - solDeger;
-  int dikeyFark = ustDeger - altDeger;
+  int dikFark   = ustDeger - altDeger;
 
-  // -------- YATAY KONTROL --------
-  if (abs(yatayFark) <= tolerans) {
-    // Sağ-sol ışık farkı küçükse yatay motor dursun
-    servoYatay.writeMicroseconds(DUR);
-  } 
-  else {
+  // ===================== YATAY KONTROL =====================
+  if (abs(yatayFark) > tolerans) {
     if (yatayFark > 0) {
-      // Sağ LDR daha aydınlıksa sağa dön
-      servoYatay.writeMicroseconds(YAVAS_SAG);
+      // Sag taraf daha aydinliksa yatay aciyi artir
+      yatayAci += adim;
     } 
     else {
-      // Sol LDR daha aydınlıksa sola dön
-      servoYatay.writeMicroseconds(YAVAS_SOL);
+      // Sol taraf daha aydinliksa yatay aciyi azalt
+      yatayAci -= adim;
     }
   }
 
-  // -------- DİKEY KONTROL --------
-  if (abs(dikeyFark) <= tolerans) {
-    // Üst-alt ışık farkı küçükse dikey motor dursun
-    servoDikey.writeMicroseconds(DUR);
-  } 
-  else {
-    if (dikeyFark > 0) {
-      // Üst LDR daha aydınlıksa yukarı dön
-      servoDikey.writeMicroseconds(YAVAS_YUKARI);
+  // ===================== DIK KONTROL =====================
+  if (abs(dikFark) > tolerans) {
+    if (dikFark > 0) {
+      // Ust taraf daha aydinliksa dik aciyi artir
+      dikAci += adim;
     } 
     else {
-      // Alt LDR daha aydınlıksa aşağı dön
-      servoDikey.writeMicroseconds(YAVAS_ASAGI);
+      // Alt taraf daha aydinliksa dik aciyi azalt
+      dikAci -= adim;
     }
   }
 
-  // Serial Monitor kontrol çıktısı
+  // Servo aci sinirlari
+  yatayAci = constrain(yatayAci, YATAY_MIN, YATAY_MAX);
+  dikAci   = constrain(dikAci, DIK_MIN, DIK_MAX);
+
+  // Servo konumlarini yaz
+  servoYatay.write(yatayAci);
+  servoDik.write(dikAci);
+
+  // Serial Monitor kontrol
   Serial.print("Sol: ");
   Serial.print(solDeger);
   Serial.print(" | Sag: ");
@@ -109,25 +166,18 @@ void loop() {
 
   Serial.print(" || Yatay Fark: ");
   Serial.print(yatayFark);
-  Serial.print(" | Dikey Fark: ");
-  Serial.print(dikeyFark);
+  Serial.print(" | Dik Fark: ");
+  Serial.print(dikFark);
 
-  Serial.print(" || Yatay Motor: ");
-  if (abs(yatayFark) <= tolerans) {
-    Serial.print("DUR");
-  } else if (yatayFark > 0) {
-    Serial.print("SAGA DON");
-  } else {
-    Serial.print("SOLA DON");
-  }
+  Serial.print(" || Yatay Aci: ");
+  Serial.print(yatayAci);
+  Serial.print(" | Dik Aci: ");
+  Serial.println(dikAci);
 
-  Serial.print(" | Dikey Motor: ");
-  if (abs(dikeyFark) <= tolerans) {
-    Serial.println("DUR");
-  } else if (dikeyFark > 0) {
-    Serial.println("YUKARI DON");
-  } else {
-    Serial.println("ASAGI DON");
+  // LCD guncelleme
+  if (millis() - oncekiLcdZamani >= lcdYenilemeSuresi) {
+    oncekiLcdZamani = millis();
+    lcdGuncelle();
   }
 
   delay(100);
