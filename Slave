@@ -38,14 +38,31 @@ const int SERVO_DIK_PIN   = 6;
 
 // ===================== AÇI DEĞERLERİ =====================
 
+// Mevcut servo açıları
 int yatayAci = 90;
 int dikAci   = 90;
+
+// Masterdan gelen hedef açılar
+int hedefYatayAci = 90;
+int hedefDikAci   = 90;
 
 const int YATAY_MIN = 10;
 const int YATAY_MAX = 170;
 
 const int DIK_MIN = 10;
 const int DIK_MAX = 170;
+
+// ===================== YAVAŞ SERVO AYARLARI =====================
+
+// Servo her adımda kaç derece ilerlesin?
+const int SERVO_ADIM = 1;
+
+// Kaç milisaniyede bir servo 1 derece ilerlesin?
+// Değer büyürse motor daha yavaş döner.
+// 20-40 ms arası iyi aralık.
+const unsigned long servoHareketSuresi = 30;
+
+unsigned long oncekiServoZamani = 0;
 
 // ===================== INA219 / PANEL AYARLARI =====================
 
@@ -104,25 +121,84 @@ void ina219Oku() {
 // ===================== NRF VERİ ALMA =====================
 
 void nrfVeriAl() {
-  if (radio.available()) {
+  bool veriGeldi = false;
+
+  // FIFO'da birden fazla veri varsa en güncel hedefe kadar oku
+  while (radio.available()) {
     radio.read(&gelenVeri, sizeof(gelenVeri));
 
-    yatayAci = gelenVeri.yatayAci;
-    dikAci   = gelenVeri.dikAci;
+    hedefYatayAci = constrain(gelenVeri.yatayAci, YATAY_MIN, YATAY_MAX);
+    hedefDikAci   = constrain(gelenVeri.dikAci, DIK_MIN, DIK_MAX);
 
-    yatayAci = constrain(yatayAci, YATAY_MIN, YATAY_MAX);
-    dikAci   = constrain(dikAci, DIK_MIN, DIK_MAX);
+    veriGeldi = true;
+  }
 
-    servoYatay.write(yatayAci);
-    servoDik.write(dikAci);
-
+  if (veriGeldi) {
     sonVeriZamani = millis();
 
     Serial.print("NRF VERI ALINDI");
-    Serial.print(" || YatayAci: ");
-    Serial.print(yatayAci);
-    Serial.print(" | DikAci: ");
-    Serial.println(dikAci);
+    Serial.print(" || Hedef Yatay: ");
+    Serial.print(hedefYatayAci);
+    Serial.print(" | Hedef Dik: ");
+    Serial.println(hedefDikAci);
+  }
+}
+
+// ===================== YAVAŞ SERVO HAREKETİ =====================
+
+void servoYavasGuncelle() {
+  if (millis() - oncekiServoZamani < servoHareketSuresi) {
+    return;
+  }
+
+  oncekiServoZamani = millis();
+
+  bool hareketVar = false;
+
+  // Yatay servo hedefe yavaş yaklaşsın
+  if (yatayAci < hedefYatayAci) {
+    yatayAci += SERVO_ADIM;
+
+    if (yatayAci > hedefYatayAci) {
+      yatayAci = hedefYatayAci;
+    }
+
+    hareketVar = true;
+  }
+  else if (yatayAci > hedefYatayAci) {
+    yatayAci -= SERVO_ADIM;
+
+    if (yatayAci < hedefYatayAci) {
+      yatayAci = hedefYatayAci;
+    }
+
+    hareketVar = true;
+  }
+
+  // Dik servo hedefe yavaş yaklaşsın
+  if (dikAci < hedefDikAci) {
+    dikAci += SERVO_ADIM;
+
+    if (dikAci > hedefDikAci) {
+      dikAci = hedefDikAci;
+    }
+
+    hareketVar = true;
+  }
+  else if (dikAci > hedefDikAci) {
+    dikAci -= SERVO_ADIM;
+
+    if (dikAci < hedefDikAci) {
+      dikAci = hedefDikAci;
+    }
+
+    hareketVar = true;
+  }
+
+  // Sadece açı değiştiyse servoya yaz
+  if (hareketVar) {
+    servoYatay.write(yatayAci);
+    servoDik.write(dikAci);
   }
 }
 
@@ -228,8 +304,11 @@ void setup() {
 // ===================== LOOP =====================
 
 void loop() {
-  // Masterdan açı bilgisini al
+  // Masterdan hedef açı bilgisini al
   nrfVeriAl();
+
+  // Servolar hedef açıya yavaş yavaş yaklaşsın
+  servoYavasGuncelle();
 
   // Slave panelinin kendi güç ölçümü
   if (millis() - oncekiInaZamani >= inaYenilemeSuresi) {
@@ -238,10 +317,15 @@ void loop() {
   }
 
   // Serial Monitor çıktısı
-  Serial.print("YatayAci: ");
+  Serial.print("Mevcut Yatay: ");
   Serial.print(yatayAci);
-  Serial.print(" | DikAci: ");
+  Serial.print(" | Mevcut Dik: ");
   Serial.print(dikAci);
+
+  Serial.print(" || Hedef Yatay: ");
+  Serial.print(hedefYatayAci);
+  Serial.print(" | Hedef Dik: ");
+  Serial.print(hedefDikAci);
 
   Serial.print(" || V: ");
   Serial.print(panelVoltaj, 2);
@@ -272,5 +356,5 @@ void loop() {
     lcdGuncelle();
   }
 
-  delay(150);
+  delay(50);
 }
